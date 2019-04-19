@@ -1,0 +1,206 @@
+local storage = minetest.get_mod_storage() --Storage independent of nodes.
+local validItems =   { {item = "stone", value = 25},
+                     {item = "diamond", value = 100},
+}
+function SplitString(string)
+  local newStrings = {}
+  for word in string:gmatch("%S+") do table.insert(newStrings, word) end
+  return newStrings
+end
+
+
+function RetrieveNodeData(i,j,k) --Returns meta data of a node, given its co-ordinates.
+    return minetest.get_meta({x = i, y = j, z = k});
+end
+
+function RetrieveNodeReinforcements(nodeData) --Retrieves the number of reinforcements left on the node.
+    local data = nodeData:get_string("reinforcement")
+    if data then
+      return minetest.deserialize(data);
+    end
+end
+
+function SetNodeReinforcements(nodeData, amount) --Sets number of reinforcements for a node.
+    local data = RetrieveNodeReinforcements(nodeData);
+    data.health = amount;
+    nodeData:set_string("reinforcement", minetest.serialize(data));
+    return amount;
+end
+
+function DeincrementReinforcements(nodeData,amount) --De-increments reinforcements by given amount.
+    return SetNodeReinforcements(nodeData,RetrieveNodeReinforcements(nodeData).health-amount);
+end
+
+minetest.register_on_placenode(function(pos, newnode, placer, oldnode, itemstack, pointed_thing)
+    
+    local groups = {};
+    local info = GetReinforceInfo(placer:get_player_name())
+    if info and info.mode == "fortify" then
+      ReinforceBlock(pos,info.group,GetItemValue(info.item))
+    end
+end)
+
+
+
+
+
+function RegisterGroup(name, firstPlayer)
+  local group = {
+      members = {firstPlayer},
+      name = name,                --Some redundancy in this approach, sql database might be more efficient depending on access speeds
+      moderators = {firstPlayer}
+    }
+    
+  local existingGroup = GetGroup(name)
+  --minetest.log("afsfsf"..existingGroup);
+  if not existingGroup then
+    storage:set_string("group_"..name, minetest.serialize(group))
+    local playerGroups = minetest.deserialize(storage:get_string(firstPlayer.."_groups"))
+    if not playerGroups then playerGroups = {} end
+    table.insert(playerGroups, name)
+    storage:set_string(firstPlayer.."_groups", minetest.serialize(playerGroups))
+    minetest.chat_send_player(firstPlayer, "Registered group '" .. name .. "'");
+  else
+    minetest.chat_send_player(firstPlayer, "Group '" .. name .. "' already exists.");
+  end
+end
+
+minetest.register_chatcommand("group", {
+    
+      params = "[groupName],",
+      description = "Creates a new group.",
+      func = function(playerName,params)
+        local splitParams = SplitString(params);
+        if splitParams[1] == "create" and splitParams[2] then
+          RegisterGroup(splitParams[2], playerName)        
+        end
+        
+        if splitParams[1] == "list" then
+          ListPlayerGroups(playerName)
+        end
+      end,
+  })
+
+
+
+
+
+
+function FindPlayerGroups(playerName)
+  local playerGroups = minetest.deserialize(storage:get_string(playerName.."_groups"));
+  return playerGroups
+end
+
+
+
+
+function GetGroup(name)
+  return minetest.deserialize(storage:get_string("group_"..name))
+end
+
+function GetReinforceInfo(playerName)
+  minetest.log("sdgihaguiahgui"..playerName)
+  return minetest.deserialize(storage:get_string(playerName.."_reinforce_info"))
+end
+
+
+function GetItemValue(item)
+  for i, child in ipairs(validItems) do
+    if child.item == item and child.value then return child.value end
+  end
+end
+
+function SetReinforceInfo(playerName,mode,group,item)
+
+  
+   if not mode then
+    minetest.chat_send_player(playerName, "No longer reinforcing.")
+    return storage:set_string(playerName.."_reinforce_info", "")
+  end 
+  if group and item then   
+    local groupData = GetGroup(group)
+    if groupData then
+      local itemValue = GetItemValue(item)
+      if itemValue then
+        local info = {
+          group = group,
+          mode = mode,
+          item = item,
+        }
+        minetest.chat_send_player(playerName, "Now reinforcing in ".. mode .. " mode to group ".. group.. " using ".. item)
+        return storage:set_string(playerName.."_reinforce_info", minetest.serialize(info))
+      else
+        minetest.chat_send_player(playerName,item.." is not a valid item.")  
+      end
+    else
+      minetest.chat_send_player(playerName,"You are not a member any group called '"..group.."'")  
+    end
+  end
+  
+
+
+end
+
+minetest.register_chatcommand("citadel", {
+    params = "[mode], [group]",
+    description = "Changes the player's reinforce mode. Valid modes: \n 'fortify': automatically reinforces all blocks you place. \n 'reinforce': punch a block to reinforce it. \n 'break': breaks existing reinforcements, provided you have permission. \n Leave the mode blank to disable reinforcing.",
+    func = function(playerName, params)
+      local splitParams = SplitString(params);
+      if splitParams[1] == "fortify" or not splitParams[1]  or splitParams[1] == "reinforce" then
+        SetReinforceInfo(playerName, splitParams[1],splitParams[2], "stone")
+
+      end
+      
+      
+      
+    end,
+    
+    
+    })
+
+function ListPlayerGroups(playerName)
+  local groups = FindPlayerGroups(playerName)
+  if groups then
+    local output = "Your groups: \n"
+    for i, group in ipairs(groups) do 
+      output = output..group..", " 
+    end
+    minetest.chat_send_player(playerName,output)
+  else
+    minetest.chat_send_player(playerName, "You are not a member of any groups, create a new one with /group create.")
+  end
+end
+
+function AddPlayerToGroup(groupName, playerName)
+  local group = minetest.deserialize(storage:get_string("group_"..groupName))
+  if group then
+    table.insert(group.members, playerName);
+    storage:set_string("group_"..groupName, minetest.serialize(group))
+  end
+end
+
+
+
+function ReinforceBlock(pos,group,amount)
+  local metadata = RetrieveNodeData(pos.x,pos.y,pos.z)
+  local reinforcement = {
+      group = group,
+      health = amount,
+    }
+  metadata:set_string("reinforcement", minetest.serialize(reinforcement));
+end
+
+
+
+local dig = minetest.node_dig --default dig function
+function minetest.node_dig(pos,node,digger) --Overwrites default dig function
+  local meta = RetrieveNodeData(pos.x,pos.y,pos.z)
+  local reinforcements = RetrieveNodeReinforcements(meta);
+  if not reinforcements or DeincrementReinforcements(meta,1) <= 0 then --Block is dug out if the block was never reinforced or reinforcements have run out.
+    return dig(pos,node,digger)
+  end
+  
+  minetest.chat_send_player(digger:get_player_name(), "Block reinforced. "..(reinforcements.health-1).. " reinforcements left.")
+end
+
+
